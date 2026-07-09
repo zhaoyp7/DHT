@@ -122,23 +122,41 @@ func (node *ChordNode) StopRPCServer() {
 }
 
 func (node *ChordNode) stabilize() {
-	node.ringLock.Lock()
-	defer node.ringLock.Unlock()
-	var pre ChordEntry
-	succ := node.successor
-	if succ == nil {
+	node.ringLock.RLock()
+	suc := node.successor
+	if suc == nil {
+		node.ringLock.RUnlock()
 		return
 	}
-	err := node.RemoteCall(succ.Addr, "ChordNode.FindPredecessor", &struct{}{}, &pre)
+	sucAddr := suc.Addr
+	sucIsSelf := suc.Id.Cmp(node.id) == 0
+	node.ringLock.RUnlock()
+	if sucIsSelf {
+		node.ringLock.Lock()
+		pred := node.predecessor
+		if pred != nil && pred.Id.Cmp(node.id) != 0 {
+			if node.successor != nil && node.successor.Id.Cmp(node.id) == 0 {
+				node.successor = pred
+			}
+		}
+		newSuc := node.successor
+		node.ringLock.Unlock()
+		if newSuc != nil && newSuc.Id.Cmp(node.id) != 0 {
+			node.RemoteCall(newSuc.Addr, "ChordNode.Notify", &ChordEntry{node.Addr, node.id}, &struct{}{})
+		}
+		return
+	}
+	var pre ChordEntry
+	err := node.RemoteCall(sucAddr, "ChordNode.FindPredecessor", &struct{}{}, &pre)
 	if err != nil {
 		return
 	}
-	if pre.Id != nil && between(pre.Id, node.id, succ.Id) {
+	if pre.Id != nil && between(pre.Id, node.id, suc.Id) {
+		node.ringLock.Lock()
 		node.successor = &pre
+		node.ringLock.Unlock()
 	}
-	node.RemoteCall(node.successor.Addr, "ChordNode.Notify",
-		&ChordEntry{Addr: node.Addr, Id: node.id}, &struct{}{})
-
+	node.RemoteCall(sucAddr, "ChordNode.Notify", &ChordEntry{node.Addr, node.id}, &struct{}{})
 }
 
 func (node *ChordNode) fixFingers() {
@@ -326,12 +344,13 @@ func (node *ChordNode) Join(addr string) bool {
 	logrus.Infof("Join %s", addr)
 	node.ringLock.Lock()
 	node.predecessor = nil
+	node.ringLock.Unlock()
 	var suc ChordEntry
 	err := node.RemoteCall(addr, "ChordNode.FindSuccessor", node.id, &suc)
 	if err != nil {
-		node.ringLock.Unlock()
 		return false
 	}
+	node.ringLock.Lock()
 	node.successor = &ChordEntry{suc.Addr, suc.Id}
 	node.ringLock.Unlock()
 	node.dataLock.Lock()
