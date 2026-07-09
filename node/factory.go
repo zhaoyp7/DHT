@@ -1,7 +1,17 @@
 package node
 
+// default test
+
+// func NewNode(port int) DhtNode {
+// 	node := new(Node)
+// 	node.Init(portToAddr(localAddress, port))
+// 	return node
+// }
+
+// Chord test
+
 func NewNode(port int) DhtNode {
-	node := new(Node)
+	node := new(ChordNode)
 	node.Init(portToAddr(localAddress, port))
 	return node
 }
