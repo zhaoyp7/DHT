@@ -132,37 +132,19 @@ func (node *ChordNode) stabilize() {
 		return
 	}
 	sucAddr := suc.Addr
-	sucIsSelf := suc.Id.Cmp(node.id) == 0
 	node.ringLock.RUnlock()
-	if sucIsSelf {
-		node.ringLock.Lock()
-		pred := node.predecessor
-		if pred != nil && pred.Id.Cmp(node.id) != 0 {
-			if node.successor != nil && node.successor.Id.Cmp(node.id) == 0 {
-				node.successor = pred
-			}
-		}
-		newSuc := node.successor
-		node.ringLock.Unlock()
-		if newSuc != nil && newSuc.Id.Cmp(node.id) != 0 {
-			node.RemoteCall(newSuc.Addr, "ChordNode.Notify", &ChordEntry{node.Addr, node.id}, &struct{}{})
-		}
+	err := node.RemoteCall(sucAddr, "ChordNode.Ping", "", &struct{}{})
+	if err != nil {
 		return
 	}
 	var pre ChordEntry
-	err := node.RemoteCall(sucAddr, "ChordNode.FindPredecessor", &struct{}{}, &pre)
+	err = node.RemoteCall(sucAddr, "ChordNode.FindPredecessor", &struct{}{}, &pre)
 	if err != nil {
-		newsuc := node.findFirstLiveSuccessor()
-		if newsuc != nil {
-			node.ringLock.Lock()
-			node.successor = newsuc
-			node.ringLock.Unlock()
-		}
 		return
 	}
 	if pre.Id != nil && between(pre.Id, node.id, suc.Id) {
 		node.ringLock.Lock()
-		node.successor = &pre
+		node.successor = &ChordEntry{pre.Addr, pre.Id}
 		node.ringLock.Unlock()
 	}
 	node.ringLock.RLock()
@@ -170,7 +152,6 @@ func (node *ChordNode) stabilize() {
 	sucAddr = suc.Addr
 	node.ringLock.RUnlock()
 	node.RemoteCall(sucAddr, "ChordNode.Notify", &ChordEntry{node.Addr, node.id}, &struct{}{})
-	// node.updateSuccessorList()
 }
 
 func (node *ChordNode) fixFingers() {
@@ -193,31 +174,22 @@ func (node *ChordNode) findSuccessor(id *big.Int) *ChordEntry {
 		return suc
 	}
 	if nprime.Id.Cmp(node.id) == 0 {
-		if suc != nil {
-			var result ChordEntry
-			err := node.RemoteCall(suc.Addr, "ChordNode.FindSuccessor", id, &result)
-			if err != nil {
-				return &ChordEntry{node.Addr, node.id}
-			}
-			return &result
-			// return suc
+		if suc != nil && suc.Id.Cmp(node.id) != 0 {
+			nprime = suc
+		} else {
+			return &ChordEntry{node.Addr, node.id}
 		}
-		return &ChordEntry{node.Addr, node.id}
 	}
 	var result ChordEntry
 	err := node.RemoteCall(nprime.Addr, "ChordNode.FindSuccessor", id, &result)
 	if err != nil {
-		if suc != nil {
-			err = node.RemoteCall(suc.Addr, "ChordNode.FindSuccessor", id, &result)
-			if err != nil {
-				return &ChordEntry{node.Addr, node.id}
-			}
-			return &result
-			// return suc
-		}
-		return &ChordEntry{node.Addr, node.id}
+		err = node.RemoteCall(suc.Addr, "ChordNode.FindSuccessor", id, &result)
 	}
-	return &result
+	if err != nil {
+		return &ChordEntry{node.Addr, node.id}
+	} else {
+		return &result
+	}
 }
 
 func (node *ChordNode) closestPrecedingFinger(id *big.Int) *ChordEntry {
@@ -247,58 +219,15 @@ func (node *ChordNode) findFirstLiveSuccessor() *ChordEntry {
 
 // my_list = [my_successor] + my_successor.successorList
 func (node *ChordNode) updateSuccessorList() {
-	node.ringLock.RLock()
-	suc := node.successor
-	if suc == nil || node.id.Cmp(suc.Id) == 0 {
-		node.ringLock.RUnlock()
+	suc := node.findFirstLiveSuccessor()
+	if suc == nil {
 		return
 	}
-	sucAddr := suc.Addr
-	node.ringLock.RUnlock()
-	sucList := make([]ChordEntry, 0, SUC_LIST_LEN)
-	err := node.RemoteCall(sucAddr, "ChordNode.FindSuccessors", &struct{}{}, &sucList)
-	if err != nil {
-		tmp := node.findFirstLiveSuccessor()
-		if tmp != nil {
-			node.ringLock.Lock()
-			node.successor = tmp
-			node.ringLock.Unlock()
-			suc = tmp
-			sucAddr = suc.Addr
-			sucList = make([]ChordEntry, 0, SUC_LIST_LEN)
-			err = node.RemoteCall(sucAddr, "ChordNode.FindSuccessors", &struct{}{}, &sucList)
-			if err != nil {
-				sucList = nil
-			}
-		} else {
-			fmt.Println("Error empty sucList")
-			return
-		}
-	}
 	newList := []*ChordEntry{suc}
-	mp := make(map[string]bool)
-	mp[node.Addr] = true
-	mp[sucAddr] = true
-	for i := 0; i < len(sucList) && len(newList) < SUC_LIST_LEN; i++ {
-		if mp[sucList[i].Addr] == false {
-			mp[sucList[i].Addr] = true
-			newList = append(newList, &sucList[i])
-		}
-	}
-	if len(newList) < SUC_LIST_LEN {
-		last := newList[len(newList) - 1]
-		for len(newList) < SUC_LIST_LEN {
-			start := new(big.Int).Add(last.Id, big.NewInt(1))
-			start.Mod(start, ringSize)
-			next := node.findSuccessor(start)
-			if next == nil || next.Id.Cmp(node.id) == 0 || mp[next.Addr] {
-				break
-			}
-			mp[next.Addr] = true
-			entry := ChordEntry{next.Addr, next.Id}
-			newList = append(newList, &entry)
-			last = &entry
-		}
+	sucList := make([]ChordEntry, 0, SUC_LIST_LEN)
+	node.RemoteCall(suc.Addr, "ChordNode.FindSuccessors", &struct{}{}, &sucList)
+	for i := 0; i < len(sucList) && i+1 < SUC_LIST_LEN; i++ {
+		newList = append(newList, &ChordEntry{sucList[i].Addr, sucList[i].Id})
 	}
 	node.ringLock.Lock()
 	node.successorList = newList
