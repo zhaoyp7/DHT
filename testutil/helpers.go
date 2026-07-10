@@ -35,13 +35,13 @@ const (
 
 	AfterTestSleepTime = 30 * time.Second
 
-	BasicTestRoundNum               int     = 5    // 5
-	BasicTestNodeSize               int     = 100  // 100
-	BasicTestRoundJoinNodeSize      int     = 20   // 20
-	BasicTestRoundQuitNodeSize      int     = 10   // 10
-	BasicTestRoundPutSize           int     = 150 // 150
-	BasicTestRoundGetSize           int     = 120 // 120
-	BasicTestRoundDeleteSize        int     = 70  // 70
+	BasicTestRoundNum               int     = 5
+	BasicTestNodeSize               int     = 100
+	BasicTestRoundJoinNodeSize      int     = 20
+	BasicTestRoundQuitNodeSize      int     = 10
+	BasicTestRoundPutSize           int     = 150
+	BasicTestRoundGetSize           int     = 120
+	BasicTestRoundDeleteSize        int     = 70
 	BasicTestMaxFailRate            float64 = 0.01
 	BasicTestAfterRunSleepTime              = 200 * time.Millisecond
 	BasicTestJoinQuitSleepTime              = time.Second

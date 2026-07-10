@@ -15,7 +15,7 @@ import (
 )
 
 const M = 160
-const SUC_LIST_LEN = 10
+const SUC_LIST_LEN = 3
 
 var ringSize = new(big.Int).Exp(big.NewInt(2), big.NewInt(160), nil)
 
@@ -135,6 +135,12 @@ func (node *ChordNode) stabilize() {
 	node.ringLock.RUnlock()
 	err := node.RemoteCall(sucAddr, "ChordNode.Ping", "", &struct{}{})
 	if err != nil {
+		liveSuc := node.findFirstLiveSuccessor()
+		if liveSuc != nil {
+			node.ringLock.Lock()
+			node.successor = liveSuc
+			node.ringLock.Unlock()
+		}
 		return
 	}
 	var pre ChordEntry
@@ -143,9 +149,14 @@ func (node *ChordNode) stabilize() {
 		return
 	}
 	if pre.Id != nil && between(pre.Id, node.id, suc.Id) {
-		node.ringLock.Lock()
-		node.successor = &ChordEntry{pre.Addr, pre.Id}
-		node.ringLock.Unlock()
+		err := node.RemoteCall(pre.Addr, "ChordNode.Ping", "", &struct{}{})
+		if err == nil {
+			node.ringLock.Lock()
+			node.successor = &ChordEntry{pre.Addr, pre.Id}
+			node.ringLock.Unlock()
+		} else {
+			node.RemoteCall(sucAddr, "ChordNode.SetPredecessor", &ChordEntry{node.Addr, node.id}, &struct{}{})
+		}
 	}
 	node.ringLock.RLock()
 	suc = node.successor
@@ -214,6 +225,18 @@ func (node *ChordNode) findFirstLiveSuccessor() *ChordEntry {
 			}
 		}
 	}
+	node.ringLock.RLock()
+	fingers := make([]*ChordEntry, len(node.finger))
+	copy(fingers, node.finger)
+	node.ringLock.RUnlock()
+	for _, f := range fingers {
+		if f != nil && node.id.Cmp(f.Id) != 0 {
+			err := node.RemoteCall(f.Addr, "ChordNode.Ping", "", &struct{}{})
+			if err == nil {
+				return f
+			}
+		}
+	}
 	return nil
 }
 
@@ -245,7 +268,7 @@ func (node *ChordNode) RemoteCall(addr string, method string, args interface{}, 
 	// Note: Here we use DialTimeout to set a timeout of 10 seconds.
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		logrus.Error("dialing: ", err)
+		logrus.Errorf("[%s] dialing: %s", node.Addr, err)
 		return err
 	}
 	client := rpc.NewClient(conn)
@@ -407,7 +430,6 @@ func (node *ChordNode) Join(addr string) bool {
 	node.successor = &ChordEntry{suc.Addr, suc.Id}
 	node.successorList = []*ChordEntry{node.successor}
 	node.ringLock.Unlock()
-	node.updateSuccessorList()
 	node.dataLock.Lock()
 	var result []Pair
 	node.ringLock.RLock()
@@ -474,15 +496,31 @@ func (node *ChordNode) Quit() {
 		}
 		node.dataLock.Unlock()
 	}
+	logrus.Infof("Quit id = %s", node.id)
+	if suc != nil {
+		logrus.Infof("Quit suc = %s", suc.Id)
+	}
+	if pre != nil {
+		logrus.Infof("Quit pre = %s", pre.Id)
+	}
 	if suc != nil && node.id.Cmp(suc.Id) != 0 && pre != nil {
 		node.RemoteCall(suc.Addr, "ChordNode.SetPredecessor", pre, &struct{}{})
 	}
 	if pre != nil && suc != nil {
 		node.RemoteCall(pre.Addr, "ChordNode.SetSuccessor", suc, &struct{}{})
 	}
+	logrus.Infof("Finish Quit %s", node.Addr)
 }
 
 func (node *ChordNode) ForceQuit() {
 	logrus.Infof("ForceQuit %s", node.Addr)
 	node.StopRPCServer()
+}
+
+func (node *ChordNode) DeBug() {
+	node.ringLock.Lock()
+	logrus.Infof("DeBug %s %s", node.Addr, node.id)
+	logrus.Infof("suc is %s", node.successor.Id)
+	logrus.Infof("pre is %s", node.predecessor.Id)
+	node.ringLock.Unlock()
 }
