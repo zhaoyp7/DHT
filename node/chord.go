@@ -257,6 +257,35 @@ func (node *ChordNode) updateSuccessorList() {
 	node.ringLock.Unlock()
 }
 
+func (node *ChordNode) pushCopies() {
+	node.ringLock.RLock()
+	pre := node.predecessor
+	sucList := make([]*ChordEntry, len(node.successorList))
+	copy(sucList, node.successorList)
+	node.ringLock.RUnlock()
+	if pre == nil {
+		return
+	}
+	dataSet := make([]Pair, 0)
+	node.dataLock.RLock()
+	for key, value := range node.data {
+		if betweenRightClose(hash(key), pre.Id, node.id) {
+			dataSet = append(dataSet, Pair{key, value})
+		}
+	}
+	node.dataLock.RUnlock()
+	for _, suc := range sucList {
+		if suc == nil || suc.Id.Cmp(node.id) == 0 {
+			continue
+		}
+		for _, tmp := range dataSet {
+			go func(addr string, pair Pair) {
+				node.RemoteCall(addr, "ChordNode.PutData", pair, nil)
+			}(suc.Addr, tmp)
+		}
+	}
+}
+
 //
 // RPC Methods
 //
@@ -406,6 +435,12 @@ func (node *ChordNode) Run(wg *sync.WaitGroup) {
 			node.fixFingers()
 		}
 	}()
+	go func() {
+		for node.online.Load() {
+			time.Sleep(500 * time.Millisecond)
+			node.pushCopies()
+		}
+	}()
 }
 
 func (node *ChordNode) Create() {
@@ -450,7 +485,17 @@ func (node *ChordNode) Put(key string, value string) bool {
 	keyID := hash(key)
 	target := node.findSuccessor(keyID)
 	err := node.RemoteCall(target.Addr, "ChordNode.PutData", Pair{key, value}, nil)
-	return err == nil
+	if err != nil {
+		return false
+	}
+	var sucList []ChordEntry
+	node.RemoteCall(target.Addr, "ChordNode.FindSuccessors", &struct{}{}, &sucList)
+	for _, suc := range sucList {
+		go func(addr string) {
+			node.RemoteCall(addr, "ChordNode.PutData", Pair{key, value}, nil)
+		}(suc.Addr)
+	}
+	return true
 }
 
 func (node *ChordNode) Get(key string) (bool, string) {
@@ -468,9 +513,21 @@ func (node *ChordNode) Get(key string) (bool, string) {
 func (node *ChordNode) Delete(key string) bool {
 	logrus.Infof("Delete %s", key)
 	keyID := hash(key)
-	target := node.findSuccessor(keyID)
+	// target := node.findSuccessor(keyID)
 	var ok bool
-	node.RemoteCall(target.Addr, "ChordNode.DeleteData", key, &ok)
+	// node.RemoteCall(target.Addr, "ChordNode.DeleteData", key, &ok)
+	now := new(big.Int).Set(keyID)
+	for true {
+		target := node.findSuccessor(now)
+		var flag bool
+		err := node.RemoteCall(target.Addr, "ChordNode.DeleteData", key, &flag)
+		if err != nil || !flag {
+			break
+		}
+		ok = true
+		now = new(big.Int).Add(target.Id, big.NewInt(1))
+		now = new(big.Int).Mod(now, ringSize)
+	}
 	return ok
 }
 
