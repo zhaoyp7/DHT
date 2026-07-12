@@ -15,7 +15,7 @@ import (
 )
 
 const M = 160
-const SUC_LIST_LEN = 3
+const SUC_LIST_LEN = 4
 
 var ringSize = new(big.Int).Exp(big.NewInt(2), big.NewInt(160), nil)
 
@@ -260,8 +260,6 @@ func (node *ChordNode) updateSuccessorList() {
 func (node *ChordNode) pushCopies() {
 	node.ringLock.RLock()
 	pre := node.predecessor
-	sucList := make([]*ChordEntry, len(node.successorList))
-	copy(sucList, node.successorList)
 	node.ringLock.RUnlock()
 	if pre == nil {
 		return
@@ -274,15 +272,18 @@ func (node *ChordNode) pushCopies() {
 		}
 	}
 	node.dataLock.RUnlock()
-	for _, suc := range sucList {
-		if suc == nil || suc.Id.Cmp(node.id) == 0 {
+
+	now := new(big.Int).Set(node.id)
+	for i := 0; i < SUC_LIST_LEN; i++ {
+		target := node.findSuccessor(now)
+		if target == nil || target.Id.Cmp(node.id) == 0 {
 			continue
 		}
 		for _, tmp := range dataSet {
-			go func(addr string, pair Pair) {
-				node.RemoteCall(addr, "ChordNode.PutData", pair, nil)
-			}(suc.Addr, tmp)
+			node.RemoteCall(target.Addr, "ChordNode.PutData", tmp, nil)
 		}
+		now = new(big.Int).Add(target.Id, big.NewInt(1))
+		now = new(big.Int).Mod(now, ringSize)
 	}
 }
 
@@ -384,7 +385,7 @@ func (node *ChordNode) DeleteData(key string, reply *bool) error {
 }
 
 func (node *ChordNode) FindSuccessors(_ *struct{}, reply *[]ChordEntry) error {
-	// logrus.Infof("enter FindSuccessors")
+	logrus.Infof("enter FindSuccessors")
 	node.ringLock.RLock()
 	defer node.ringLock.RUnlock()
 	res := make([]ChordEntry, 0, SUC_LIST_LEN)
@@ -394,7 +395,7 @@ func (node *ChordNode) FindSuccessors(_ *struct{}, reply *[]ChordEntry) error {
 		}
 	}
 	*reply = res
-	// logrus.Infof("leave FindSuccessors")
+	logrus.Infof("leave FindSuccessors")
 	return nil
 }
 
@@ -483,19 +484,19 @@ func (node *ChordNode) Join(addr string) bool {
 func (node *ChordNode) Put(key string, value string) bool {
 	logrus.Infof("Put %s %s", key, value)
 	keyID := hash(key)
-	target := node.findSuccessor(keyID)
-	err := node.RemoteCall(target.Addr, "ChordNode.PutData", Pair{key, value}, nil)
-	if err != nil {
-		return false
+	var ok bool
+	now := new(big.Int).Set(keyID)
+	for i := 0; i < SUC_LIST_LEN; i++ {
+		target := node.findSuccessor(now)
+		err := node.RemoteCall(target.Addr, "ChordNode.PutData", Pair{key, value}, nil)
+		if err != nil {
+			break
+		}
+		ok = true
+		now = new(big.Int).Add(target.Id, big.NewInt(1))
+		now = new(big.Int).Mod(now, ringSize)
 	}
-	var sucList []ChordEntry
-	node.RemoteCall(target.Addr, "ChordNode.FindSuccessors", &struct{}{}, &sucList)
-	for _, suc := range sucList {
-		go func(addr string) {
-			node.RemoteCall(addr, "ChordNode.PutData", Pair{key, value}, nil)
-		}(suc.Addr)
-	}
-	return true
+	return ok
 }
 
 func (node *ChordNode) Get(key string) (bool, string) {
@@ -513,9 +514,7 @@ func (node *ChordNode) Get(key string) (bool, string) {
 func (node *ChordNode) Delete(key string) bool {
 	logrus.Infof("Delete %s", key)
 	keyID := hash(key)
-	// target := node.findSuccessor(keyID)
 	var ok bool
-	// node.RemoteCall(target.Addr, "ChordNode.DeleteData", key, &ok)
 	now := new(big.Int).Set(keyID)
 	for true {
 		target := node.findSuccessor(now)
