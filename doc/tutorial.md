@@ -8,8 +8,6 @@ It is a good idea to skim the official Go tutorial [A Tour of Go](https://go.dev
 
 The two topics you should focus on are [goroutine concurrent programming](https://chai2010.cn/advanced-go-programming-book/ch1-basic/ch1-06-goroutine.html) and [RPC (Remote Procedure Call)](https://chai2010.cn/advanced-go-programming-book/ch4-rpc/ch4-01-rpc-intro.html).
 
-A condensed Go syntax and semantics reference is also available in [Go.md](Go.md).
-
 ## On the test programs
 
 The tests initialize a number of DHT nodes on your machine that exchange
@@ -23,7 +21,7 @@ See the project [README](../README.md) for details.
 
 For an initial overview, the recommended survey [blog post](https://luyuhuang.tech/2020/03/06/dht-and-p2p.html) gives a good first understanding of the protocols.
 
-For detailed technical specifics, read the two papers: [Chord](https://pdos.csail.mit.edu/papers/chord:sigcomm01/chord_sigcomm.pdf) and [Kademlia] (https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf) (reading the papers is strongly encouraged).
+For detailed technical specifics, read the two papers: [Chord](https://pdos.csail.mit.edu/papers/chord:sigcomm01/chord_sigcomm.pdf) and [Kademlia](https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf) (reading the papers is strongly encouraged).
 
 Other supplementary references:
 [Kademlia in Go](http://blog.notdot.net/tag/kademlia),
