@@ -1,4 +1,4 @@
-package node
+package chord
 
 import (
 	"crypto/sha1"
@@ -41,6 +41,11 @@ type ChordNode struct {
 	dataLock sync.RWMutex
 
 	ringLock sync.RWMutex
+}
+
+type Pair struct {
+	Key   string
+	Value string
 }
 
 func hash(s string) *big.Int {

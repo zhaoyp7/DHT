@@ -1,9 +1,8 @@
-package node
+package kademlia
 
 import (
-	// "fmt"
 	"math/big"
-	// "math/rand"
+	"crypto/sha1"
 	"net"
 	"net/rpc"
 	"sort"
@@ -17,7 +16,7 @@ import (
 const K = 7
 const ALPHA = 3
 
-// const M = 160
+const M = 160
 
 type KademliaEntry struct {
 	Addr string
@@ -66,6 +65,16 @@ type StoreArgs struct {
 
 type PingArgs struct {
 	SenderAddr string
+}
+
+type Pair struct {
+	Key   string
+	Value string
+}
+
+func hash(s string) *big.Int {
+	res := sha1.Sum([]byte(s))
+	return new(big.Int).SetBytes(res[:])
 }
 
 func xorDistance(a, b *big.Int) *big.Int {
