@@ -15,7 +15,7 @@ import (
 )
 
 const K = 7
-const ALPHA = 2
+const ALPHA = 3
 
 // const M = 160
 
@@ -83,7 +83,7 @@ func bucketIndex(nodeID, targetID *big.Int) int {
 }
 
 func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
-	logrus.Infof("addToBucket %s", entry.Addr)
+	// logrus.Infof("addToBucket %s", entry.Addr)
 	if node.id.Cmp(entry.Id) == 0 {
 		// logrus.Infof("fail #1 %s", entry.Addr)
 		return
@@ -185,12 +185,12 @@ func (node *KademliaNode) RunRPCServer(wg *sync.WaitGroup) {
 	node.listener, err = net.Listen("tcp", node.Addr)
 	wg.Done()
 	if err != nil {
-		logrus.Fatal("listen error: ", err)
+		// logrus.Fatal("listen error: ", err)
 	}
 	for node.online.Load() {
 		conn, err := node.listener.Accept()
 		if err != nil {
-			logrus.Error("accept error: ", err)
+			// logrus.Error("accept error: ", err)
 			return
 		}
 		go node.server.ServeConn(conn)
@@ -395,19 +395,19 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 
 func (node *KademliaNode) RemoteCall(addr string, method string, args interface{}, reply interface{}) error {
 	if method != "KademliaNode.Ping" {
-		logrus.Infof("[%s] RemoteCall %s %s %v", node.Addr, addr, method, args)
+		// logrus.Infof("[%s] RemoteCall %s %s %v", node.Addr, addr, method, args)
 	}
 	// Note: Here we use DialTimeout to set a timeout of 10 seconds.
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		logrus.Errorf("[%s] dialing: %s", node.Addr, err)
+		// logrus.Errorf("[%s] dialing: %s", node.Addr, err)
 		return err
 	}
 	client := rpc.NewClient(conn)
 	defer client.Close()
 	err = client.Call(method, args, reply)
 	if err != nil {
-		logrus.Error("RemoteCall error: ", err)
+		// logrus.Error("RemoteCall error: ", err)
 		return err
 	}
 	return nil
@@ -485,7 +485,7 @@ func (node *KademliaNode) Run(wg *sync.WaitGroup) {
 func (node *KademliaNode) Create() {}
 
 func (node *KademliaNode) Join(addr string) bool {
-	logrus.Infof("Join %s", addr)
+	// logrus.Infof("Join %s", addr)
 	err := node.RemoteCall(addr, "KademliaNode.Ping", &PingArgs{SenderAddr: node.Addr}, &struct{}{})
 	if err != nil {
 		return false
@@ -496,7 +496,7 @@ func (node *KademliaNode) Join(addr string) bool {
 }
 
 func (node *KademliaNode) Put(key string, value string) bool {
-	logrus.Infof("Put %s %s", key, value)
+	// logrus.Infof("Put %s %s", key, value)
 	keyID := hash(key)
 	targets := node.findNode(keyID)
 	var ok atomic.Bool
@@ -522,7 +522,7 @@ func (node *KademliaNode) Put(key string, value string) bool {
 }
 
 func (node *KademliaNode) Get(key string) (bool, string) {
-	logrus.Infof("Get %s", key)
+	// logrus.Infof("Get %s", key)
 	return node.findValue(key)
 }
 
@@ -531,7 +531,7 @@ func (node *KademliaNode) Delete(key string) bool {
 }
 
 func (node *KademliaNode) Quit() {
-	logrus.Infof("Quit %s", node.Addr)
+	// logrus.Infof("Quit %s", node.Addr)
 	node.dataLock.Lock()
 	pairs := make([]Pair, 0, len(node.data))
 	for k, v := range node.data {
@@ -542,11 +542,11 @@ func (node *KademliaNode) Quit() {
 		node.Put(pair.Key, pair.Value)
 	}
 	node.StopRPCServer()
-	logrus.Infof("Finish Quit %s", node.Addr)
+	// logrus.Infof("Finish Quit %s", node.Addr)
 }
 
 func (node *KademliaNode) ForceQuit() {
-	logrus.Infof("ForceQuit %s", node.Addr)
+	// logrus.Infof("ForceQuit %s", node.Addr)
 	node.StopRPCServer()
 }
 
