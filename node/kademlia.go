@@ -538,8 +538,26 @@ func (node *KademliaNode) Quit() {
 		pairs = append(pairs, Pair{k, v})
 	}
 	node.dataLock.Unlock()
+	// for _, pair := range pairs {
+	// 	node.Put(pair.Key, pair.Value)
+	// }
 	for _, pair := range pairs {
-		node.Put(pair.Key, pair.Value)
+		keyID := hash(pair.Key)
+		targets := node.findClosest(keyID, K)
+		key, value := pair.Key, pair.Value
+		var wg sync.WaitGroup
+		for _, t := range targets {
+			wg.Add(1)
+			go func(addr string) {
+				defer wg.Done()
+				err := node.RemoteCall(addr, "KademliaNode.Store",
+					&StoreArgs{Key: key, Value: value, SenderAddr: node.Addr}, &struct{}{})
+				if err != nil {
+					node.removeFromBucket(addr)
+				}
+			}(t.Addr)
+		}
+		wg.Wait()
 	}
 	node.StopRPCServer()
 	// logrus.Infof("Finish Quit %s", node.Addr)
