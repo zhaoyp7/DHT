@@ -1,9 +1,9 @@
 package node
 
 import (
-	"fmt"
+	// "fmt"
 	"math/big"
-	"math/rand"
+	// "math/rand"
 	"net"
 	"net/rpc"
 	"sort"
@@ -14,7 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const K = 4
+const K = 7
 const ALPHA = 2
 
 // const M = 160
@@ -85,7 +85,7 @@ func bucketIndex(nodeID, targetID *big.Int) int {
 func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
 	logrus.Infof("addToBucket %s", entry.Addr)
 	if node.id.Cmp(entry.Id) == 0 {
-		logrus.Infof("fail #1 %s", entry.Addr)
+		// logrus.Infof("fail #1 %s", entry.Addr)
 		return
 	}
 	node.bucketLock.Lock()
@@ -96,14 +96,14 @@ func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
 			bucket.entries = append(bucket.entries[:i], bucket.entries[i+1:]...)
 			bucket.entries = append(bucket.entries, entry)
 			node.bucketLock.Unlock()
-			logrus.Infof("fail #2 %s", entry.Addr)
+			// logrus.Infof("fail #2 %s", entry.Addr)
 			return
 		}
 	}
 	if len(bucket.entries) < K {
 		bucket.entries = append(bucket.entries, entry)
 		node.bucketLock.Unlock()
-		logrus.Infof("fail #3 %s", entry.Addr)
+		// logrus.Infof("fail #3 %s", entry.Addr)
 		return
 	}
 	tmp := bucket.entries[0]
@@ -114,17 +114,31 @@ func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
 	bucket = node.buckets[idx]
 	if len(bucket.entries) == 0 || bucket.entries[0].Addr != tmpAddr {
 		node.bucketLock.Unlock()
-		logrus.Infof("fail #4 %s", entry.Addr)
+		// logrus.Infof("fail #4 %s", entry.Addr)
 		return
 	}
 	if err != nil {
 		bucket.entries = append(bucket.entries[1:], entry)
 	}
 	node.bucketLock.Unlock()
-	logrus.Infof("fail #5 %s", entry.Addr)
+	// logrus.Infof("fail #5 %s", entry.Addr)
 }
 
 func (node *KademliaNode) removeFromBucket(addr string) {
+	node.bucketLock.Lock()
+	defer node.bucketLock.Unlock()
+	ID := hash(addr)
+	idx := bucketIndex(node.id, ID)
+	if idx < 0 {
+		return
+	}
+	bucket := node.buckets[idx]
+	for i, tmp := range bucket.entries {
+		if tmp.Addr == addr {
+			bucket.entries = append(bucket.entries[:i], bucket.entries[i+1:]...)
+			return
+		}
+	}
 }
 
 func (node *KademliaNode) findClosest(targetID *big.Int, count int) []KademliaEntry {
@@ -218,6 +232,7 @@ func (node *KademliaNode) findNode(targetID *big.Int) []KademliaEntry {
 				var reply []KademliaEntry
 				err := node.RemoteCall(addr, "KademliaNode.FindNode", &FindNodeArgs{TargetID: targetID, SenderAddr: node.Addr}, &reply)
 				if err != nil {
+					node.removeFromBucket(addr)
 					return
 				}
 				res[idx] = reply
@@ -308,6 +323,7 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 				var reply FindValueReply
 				err := node.RemoteCall(addr, "KademliaNode.FindValue", &FindValueArgs{Key: key, SenderAddr: node.Addr}, &reply)
 				if err != nil {
+					node.removeFromBucket(addr)
 					return
 				}
 				res[idx].flag = reply.HasValue
@@ -329,8 +345,11 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 				// Store the value back to the K nearest nodes
 				cacheTargets := node.findClosest(keyID, K)
 				for _, entry := range cacheTargets {
-				node.RemoteCall(entry.Addr, "KademliaNode.Store",
-					&StoreArgs{Key: key, Value: foundValue, SenderAddr: node.Addr}, &struct{}{})
+					err := node.RemoteCall(entry.Addr, "KademliaNode.Store",
+						&StoreArgs{Key: key, Value: foundValue, SenderAddr: node.Addr}, &struct{}{})
+					if err != nil {
+						node.removeFromBucket(entry.Addr)
+					}
 				}
 				return true, foundValue
 			}
@@ -440,27 +459,27 @@ func (node *KademliaNode) DeleteData(key string, reply *bool) error {
 func (node *KademliaNode) Run(wg *sync.WaitGroup) {
 	node.online.Store(true)
 	go node.RunRPCServer(wg)
-	go func() {
-		for node.online.Load() {
-			time.Sleep(time.Second)
-			randID := hash(fmt.Sprintf("%d", rand.Int()))
-			node.findNode(randID)
-		}
-	}()
-	go func() {
-		for node.online.Load() {
-			time.Sleep(5000 * time.Millisecond)
-			node.dataLock.Lock()
-			pairs := make([]Pair, 0, len(node.data))
-			for k, v := range node.data {
-				pairs = append(pairs, Pair{k, v})
-			}
-			node.dataLock.Unlock()
-			for _, pair := range pairs {
-				node.Put(pair.Key, pair.Value)
-			}
-		}
-	}()
+	// go func() {
+	// 	for node.online.Load() {
+	// 		time.Sleep(time.Second)
+	// 		randID := hash(fmt.Sprintf("%d", rand.Int()))
+	// 		node.findNode(randID)
+	// 	}
+	// }()
+	// go func() {
+	// 	for node.online.Load() {
+	// 		time.Sleep(5000 * time.Millisecond)
+	// 		node.dataLock.Lock()
+	// 		pairs := make([]Pair, 0, len(node.data))
+	// 		for k, v := range node.data {
+	// 			pairs = append(pairs, Pair{k, v})
+	// 		}
+	// 		node.dataLock.Unlock()
+	// 		for _, pair := range pairs {
+	// 			node.Put(pair.Key, pair.Value)
+	// 		}
+	// 	}
+	// }()
 }
 
 func (node *KademliaNode) Create() {}
@@ -490,6 +509,8 @@ func (node *KademliaNode) Put(key string, value string) bool {
 			err := node.RemoteCall(addr, "KademliaNode.Store", &StoreArgs{Key: key, Value: value, SenderAddr: node.Addr}, &struct{}{})
 			if err == nil {
 				ok.Store(true)
+			} else {
+				node.removeFromBucket(addr)
 			}
 		}(tmp.Addr)
 	}
@@ -511,7 +532,6 @@ func (node *KademliaNode) Delete(key string) bool {
 
 func (node *KademliaNode) Quit() {
 	logrus.Infof("Quit %s", node.Addr)
-	node.StopRPCServer()
 	node.dataLock.Lock()
 	pairs := make([]Pair, 0, len(node.data))
 	for k, v := range node.data {
@@ -521,6 +541,7 @@ func (node *KademliaNode) Quit() {
 	for _, pair := range pairs {
 		node.Put(pair.Key, pair.Value)
 	}
+	node.StopRPCServer()
 	logrus.Infof("Finish Quit %s", node.Addr)
 }
 
