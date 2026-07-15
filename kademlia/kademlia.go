@@ -1,8 +1,8 @@
 package kademlia
 
 import (
-	"math/big"
 	"crypto/sha1"
+	"math/big"
 	"net"
 	"net/rpc"
 	"sort"
@@ -23,6 +23,11 @@ type KademliaEntry struct {
 	Id   *big.Int
 }
 
+type dataEntry struct {
+	Value   string
+	Version int64
+}
+
 type KBucket struct {
 	entries []*KademliaEntry
 }
@@ -32,7 +37,8 @@ type KademliaNode struct {
 	online atomic.Bool
 	id     *big.Int
 
-	data       map[string]string
+	// data       map[string]string
+	data       map[string]dataEntry
 	dataLock   sync.RWMutex
 	buckets    [M]*KBucket
 	bucketLock sync.RWMutex
@@ -45,6 +51,7 @@ type FindValueReply struct {
 	Value    string
 	Nodes    []KademliaEntry
 	HasValue bool
+	Version  int64
 }
 
 type FindNodeArgs struct {
@@ -60,11 +67,23 @@ type FindValueArgs struct {
 type StoreArgs struct {
 	Key        string
 	Value      string
+	Version    int64
 	SenderAddr string
 }
 
 type PingArgs struct {
 	SenderAddr string
+}
+
+type DeleteKeyArgs struct {
+	Key        string
+	Version    int64
+	SenderAddr string
+}
+
+type DeleteKeyReply struct {
+	Deleted bool
+	Nodes   []KademliaEntry
 }
 
 type Pair struct {
@@ -181,7 +200,7 @@ func (node *KademliaNode) findClosest(targetID *big.Int, count int) []KademliaEn
 func (node *KademliaNode) Init(addr string) {
 	node.Addr = addr
 	node.id = hash(addr)
-	node.data = make(map[string]string)
+	node.data = make(map[string]dataEntry)
 	for i := 0; i < M; i++ {
 		node.buckets[i] = &KBucket{}
 	}
@@ -294,13 +313,14 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 	type result struct {
 		flag  bool
 		value string
+		ver   int64
 		nodes []KademliaEntry
 	}
 	keyID := hash(key)
 	node.dataLock.RLock()
 	if val, ok := node.data[key]; ok {
 		node.dataLock.RUnlock()
-		return true, val
+		return true, val.Value
 	}
 	node.dataLock.RUnlock()
 
@@ -337,6 +357,7 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 				}
 				res[idx].flag = reply.HasValue
 				res[idx].value = reply.Value
+				res[idx].ver = reply.Version
 				res[idx].nodes = reply.Nodes
 				for _, entry := range reply.Nodes {
 					node.addToBucket(&KademliaEntry{entry.Addr, entry.Id})
@@ -355,7 +376,7 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 				cacheTargets := node.findClosest(keyID, K)
 				for _, entry := range cacheTargets {
 					err := node.RemoteCall(entry.Addr, "KademliaNode.Store",
-						&StoreArgs{Key: key, Value: foundValue, SenderAddr: node.Addr}, &struct{}{})
+						&StoreArgs{key, foundValue, res[i].ver, node.Addr}, &struct{}{})
 					if err != nil {
 						node.removeFromBucket(entry.Addr)
 					}
@@ -431,11 +452,12 @@ func (node *KademliaNode) FindNode(args *FindNodeArgs, reply *[]KademliaEntry) e
 func (node *KademliaNode) FindValue(args *FindValueArgs, reply *FindValueReply) error {
 	node.addToBucket(&KademliaEntry{args.SenderAddr, hash(args.SenderAddr)})
 	node.dataLock.RLock()
-	value, ok := node.data[args.Key]
+	entry, ok := node.data[args.Key]
 	node.dataLock.RUnlock()
 	if ok {
 		reply.HasValue = true
-		reply.Value = value
+		reply.Value = entry.Value
+		reply.Version = entry.Version
 		return nil
 	}
 	reply.HasValue = false
@@ -447,7 +469,11 @@ func (node *KademliaNode) FindValue(args *FindValueArgs, reply *FindValueReply) 
 func (node *KademliaNode) Store(args *StoreArgs, _ *struct{}) error {
 	node.addToBucket(&KademliaEntry{args.SenderAddr, hash(args.SenderAddr)})
 	node.dataLock.Lock()
-	node.data[args.Key] = args.Value
+	// node.data[args.Key] = args.Value
+	entry, ok := node.data[args.Key]
+	if !ok || args.Version > entry.Version {
+		node.data[args.Key] = dataEntry{Value: args.Value, Version: args.Version}
+	}
 	node.dataLock.Unlock()
 	return nil
 }
@@ -457,7 +483,20 @@ func (node *KademliaNode) Ping(args *PingArgs, _ *struct{}) error {
 	return nil
 }
 
-func (node *KademliaNode) DeleteData(key string, reply *bool) error {
+func (node *KademliaNode) DeleteKey(args *DeleteKeyArgs, reply *DeleteKeyReply) error {
+	node.addToBucket(&KademliaEntry{args.SenderAddr, hash(args.SenderAddr)})
+	node.dataLock.Lock()
+	entry, ok := node.data[args.Key]
+	if ok && args.Version >= entry.Version {
+		delete(node.data, args.Key)
+		node.dataLock.Unlock()
+		reply.Deleted = true
+	} else {
+		node.dataLock.Unlock()
+		reply.Deleted = false
+	}
+	keyID := hash(args.Key)
+	reply.Nodes = node.findClosest(keyID, K)
 	return nil
 }
 
@@ -506,6 +545,7 @@ func (node *KademliaNode) Join(addr string) bool {
 
 func (node *KademliaNode) Put(key string, value string) bool {
 	// logrus.Infof("Put %s %s", key, value)
+	ver := time.Now().UnixNano()
 	keyID := hash(key)
 	targets := node.findNode(keyID)
 	var ok atomic.Bool
@@ -515,7 +555,7 @@ func (node *KademliaNode) Put(key string, value string) bool {
 		wg.Add(1)
 		go func(addr string) {
 			defer wg.Done()
-			err := node.RemoteCall(addr, "KademliaNode.Store", &StoreArgs{Key: key, Value: value, SenderAddr: node.Addr}, &struct{}{})
+			err := node.RemoteCall(addr, "KademliaNode.Store", &StoreArgs{key, value, ver, node.Addr}, &struct{}{})
 			if err == nil {
 				ok.Store(true)
 			} else {
@@ -524,9 +564,9 @@ func (node *KademliaNode) Put(key string, value string) bool {
 		}(tmp.Addr)
 	}
 	wg.Wait()
-	node.dataLock.Lock()
-	node.data[key] = value
-	node.dataLock.Unlock()
+	// node.dataLock.Lock()
+	// node.data[key] = dataEntry{value, ver}
+	// node.dataLock.Unlock()
 	return ok.Load()
 }
 
@@ -536,31 +576,127 @@ func (node *KademliaNode) Get(key string) (bool, string) {
 }
 
 func (node *KademliaNode) Delete(key string) bool {
-	return true
+	deleteVersion := time.Now().UnixNano()
+	keyID := hash(key)
+	deleted := false
+
+	node.dataLock.Lock()
+	if entry, ok := node.data[key]; ok && deleteVersion >= entry.Version {
+		delete(node.data, key)
+		deleted = true
+	}
+	node.dataLock.Unlock()
+
+	shortlist := node.findClosest(keyID, K)
+	if len(shortlist) == 0 {
+		return deleted
+	}
+	visited := make(map[string]bool)
+	visited[node.Addr] = true
+
+	for {
+		var array []KademliaEntry
+		for _, tmp := range shortlist {
+			if !visited[tmp.Addr] {
+				array = append(array, tmp)
+			}
+			if len(array) == ALPHA {
+				break
+			}
+		}
+		if len(array) == 0 {
+			break
+		}
+
+		var wg sync.WaitGroup
+		res := make([]DeleteKeyReply, len(array))
+		for i, tmp := range array {
+			wg.Add(1)
+			go func(idx int, addr string) {
+				defer wg.Done()
+				var reply DeleteKeyReply
+				err := node.RemoteCall(addr, "KademliaNode.DeleteKey",
+					&DeleteKeyArgs{key, deleteVersion, node.Addr}, &reply)
+				if err != nil {
+					node.removeFromBucket(addr)
+					return
+				}
+				res[idx] = reply
+				for _, entry := range reply.Nodes {
+					node.addToBucket(&KademliaEntry{entry.Addr, entry.Id})
+				}
+			}(i, tmp.Addr)
+		}
+		wg.Wait()
+
+		for _, tmp := range array {
+			visited[tmp.Addr] = true
+		}
+		for i := 0; i < len(res); i++ {
+			if res[i].Deleted {
+				deleted = true
+			}
+		}
+
+		for i := 0; i < len(res); i++ {
+			for _, tmp := range res[i].Nodes {
+				flag := false
+				for _, entry := range shortlist {
+					if entry.Id.Cmp(tmp.Id) == 0 {
+						flag = true
+						break
+					}
+				}
+				if !flag && node.id.Cmp(tmp.Id) != 0 {
+					shortlist = append(shortlist, tmp)
+				}
+			}
+		}
+		sort.Slice(shortlist, func(i, j int) bool {
+			return xorDistance(shortlist[i].Id, keyID).Cmp(xorDistance(shortlist[j].Id, keyID)) < 0
+		})
+		if len(shortlist) > K {
+			shortlist = shortlist[:K]
+		}
+		flag := true
+		for i := 0; i < len(shortlist) && i < K; i++ {
+			if !visited[shortlist[i].Addr] {
+				flag = false
+				break
+			}
+		}
+		if flag {
+			break
+		}
+	}
+	return deleted
 }
 
 func (node *KademliaNode) Quit() {
 	// logrus.Infof("Quit %s", node.Addr)
 	node.dataLock.Lock()
 	pairs := make([]Pair, 0, len(node.data))
+	versions := make([]int64, 0, len(node.data))
 	for k, v := range node.data {
-		pairs = append(pairs, Pair{k, v})
+		pairs = append(pairs, Pair{k, v.Value})
+		versions = append(versions, v.Version)
 	}
 	node.dataLock.Unlock()
 	// for _, pair := range pairs {
 	// 	node.Put(pair.Key, pair.Value)
 	// }
-	for _, pair := range pairs {
+	for i, pair := range pairs {
 		keyID := hash(pair.Key)
 		targets := node.findClosest(keyID, K)
 		key, value := pair.Key, pair.Value
+		ver := versions[i]
 		var wg sync.WaitGroup
 		for _, t := range targets {
 			wg.Add(1)
 			go func(addr string) {
 				defer wg.Done()
 				err := node.RemoteCall(addr, "KademliaNode.Store",
-					&StoreArgs{Key: key, Value: value, SenderAddr: node.Addr}, &struct{}{})
+					&StoreArgs{key, value, ver, node.Addr}, &struct{}{})
 				if err != nil {
 					node.removeFromBucket(addr)
 				}
