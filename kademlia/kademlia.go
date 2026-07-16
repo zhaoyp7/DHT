@@ -1,7 +1,9 @@
 package kademlia
 
 import (
+	"math/rand"
 	"crypto/sha1"
+	"fmt"
 	"math/big"
 	"net"
 	"net/rpc"
@@ -15,7 +17,6 @@ import (
 
 const K = 7
 const ALPHA = 3
-
 const M = 160
 
 type KademliaEntry struct {
@@ -37,7 +38,6 @@ type KademliaNode struct {
 	online atomic.Bool
 	id     *big.Int
 
-	// data       map[string]string
 	data       map[string]dataEntry
 	dataLock   sync.RWMutex
 	buckets    [M]*KBucket
@@ -96,11 +96,6 @@ func hash(s string) *big.Int {
 	return new(big.Int).SetBytes(res[:])
 }
 
-func xorDistance(a, b *big.Int) *big.Int {
-	res := new(big.Int).Xor(a, b)
-	return res
-}
-
 func bucketIndex(nodeID, targetID *big.Int) int {
 	tmp := new(big.Int).Xor(nodeID, targetID)
 	if tmp.Sign() == 0 {
@@ -111,9 +106,7 @@ func bucketIndex(nodeID, targetID *big.Int) int {
 }
 
 func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
-	// logrus.Infof("addToBucket %s", entry.Addr)
 	if node.id.Cmp(entry.Id) == 0 {
-		// logrus.Infof("fail #1 %s", entry.Addr)
 		return
 	}
 	node.bucketLock.Lock()
@@ -124,14 +117,12 @@ func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
 			bucket.entries = append(bucket.entries[:i], bucket.entries[i+1:]...)
 			bucket.entries = append(bucket.entries, entry)
 			node.bucketLock.Unlock()
-			// logrus.Infof("fail #2 %s", entry.Addr)
 			return
 		}
 	}
 	if len(bucket.entries) < K {
 		bucket.entries = append(bucket.entries, entry)
 		node.bucketLock.Unlock()
-		// logrus.Infof("fail #3 %s", entry.Addr)
 		return
 	}
 	tmp := bucket.entries[0]
@@ -152,17 +143,17 @@ func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
 	}
 	if err != nil {
 		bucket.entries = append(bucket.entries[1:], entry)
-	} else {
-		bucket.entries = append(bucket.entries, entry)
 	}
+	// else {
+	//	 bucket.entries = append(bucket.entries, entry)
+	// }
 	node.bucketLock.Unlock()
 }
 
 func (node *KademliaNode) removeFromBucket(addr string) {
 	node.bucketLock.Lock()
 	defer node.bucketLock.Unlock()
-	ID := hash(addr)
-	idx := bucketIndex(node.id, ID)
+	idx := bucketIndex(node.id, hash(addr))
 	if idx < 0 {
 		return
 	}
@@ -186,7 +177,7 @@ func (node *KademliaNode) findClosest(targetID *big.Int, count int) []KademliaEn
 	for _, bucket := range node.buckets {
 		for _, tmp := range bucket.entries {
 			if tmp.Id.Cmp(node.id) != 0 {
-				array = append(array, pair{tmp, xorDistance(tmp.Id, targetID)})
+				array = append(array, pair{tmp, new(big.Int).Xor(tmp.Id, targetID)})
 			}
 		}
 	}
@@ -200,8 +191,6 @@ func (node *KademliaNode) findClosest(targetID *big.Int, count int) []KademliaEn
 	}
 	return res
 }
-
-// Initialize a node.
 
 func (node *KademliaNode) Init(addr string) {
 	node.Addr = addr
@@ -219,12 +208,12 @@ func (node *KademliaNode) RunRPCServer(wg *sync.WaitGroup) {
 	node.listener, err = net.Listen("tcp", node.Addr)
 	wg.Done()
 	if err != nil {
-		// logrus.Fatal("listen error: ", err)
+		logrus.Fatal("listen error: ", err)
 	}
 	for node.online.Load() {
 		conn, err := node.listener.Accept()
 		if err != nil {
-			// logrus.Error("accept error: ", err)
+			logrus.Error("accept error: ", err)
 			return
 		}
 		go node.server.ServeConn(conn)
@@ -256,7 +245,6 @@ func (node *KademliaNode) findNode(targetID *big.Int) []KademliaEntry {
 		if len(array) == 0 {
 			break
 		}
-
 		var wg sync.WaitGroup
 		res := make([][]KademliaEntry, len(array))
 		for i, tmp := range array {
@@ -276,7 +264,6 @@ func (node *KademliaNode) findNode(targetID *big.Int) []KademliaEntry {
 			}(i, tmp.Addr)
 		}
 		wg.Wait()
-
 		for _, tmp := range array {
 			visited[tmp.Addr] = true
 		}
@@ -295,8 +282,8 @@ func (node *KademliaNode) findNode(targetID *big.Int) []KademliaEntry {
 			}
 		}
 		sort.Slice(shortlist, func(i, j int) bool {
-			return xorDistance(shortlist[i].Id, targetID).Cmp(
-				xorDistance(shortlist[j].Id, targetID)) < 0
+			return new(big.Int).Xor(shortlist[i].Id, targetID).Cmp(
+				new(big.Int).Xor(shortlist[j].Id, targetID)) < 0
 		})
 		if len(shortlist) > K {
 			shortlist = shortlist[:K]
@@ -329,7 +316,6 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 		return true, val.Value
 	}
 	node.dataLock.RUnlock()
-
 	shortlist := node.findClosest(keyID, K)
 	if len(shortlist) == 0 {
 		return false, ""
@@ -371,7 +357,6 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 			}(i, tmp.Addr)
 		}
 		wg.Wait()
-
 		for _, tmp := range array {
 			visited[tmp.Addr] = true
 		}
@@ -405,8 +390,8 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 			}
 		}
 		sort.Slice(shortlist, func(i, j int) bool {
-			return xorDistance(shortlist[i].Id, keyID).Cmp(
-				xorDistance(shortlist[j].Id, keyID)) < 0
+			return new(big.Int).Xor(shortlist[i].Id, keyID).Cmp(
+				new(big.Int).Xor(shortlist[j].Id, keyID)) < 0
 		})
 		if len(shortlist) > K {
 			shortlist = shortlist[:K]
@@ -431,19 +416,19 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 
 func (node *KademliaNode) RemoteCall(addr string, method string, args interface{}, reply interface{}) error {
 	if method != "KademliaNode.Ping" {
-		// logrus.Infof("[%s] RemoteCall %s %s %v", node.Addr, addr, method, args)
+		logrus.Infof("[%s] RemoteCall %s %s %v", node.Addr, addr, method, args)
 	}
 	// Note: Here we use DialTimeout to set a timeout of 10 seconds.
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		// logrus.Errorf("[%s] dialing: %s", node.Addr, err)
+		logrus.Errorf("[%s] dialing: %s", node.Addr, err)
 		return err
 	}
 	client := rpc.NewClient(conn)
 	defer client.Close()
 	err = client.Call(method, args, reply)
 	if err != nil {
-		// logrus.Error("RemoteCall error: ", err)
+		logrus.Error("RemoteCall error: ", err)
 		return err
 	}
 	return nil
@@ -475,7 +460,6 @@ func (node *KademliaNode) FindValue(args *FindValueArgs, reply *FindValueReply) 
 func (node *KademliaNode) Store(args *StoreArgs, _ *struct{}) error {
 	node.addToBucket(&KademliaEntry{args.SenderAddr, hash(args.SenderAddr)})
 	node.dataLock.Lock()
-	// node.data[args.Key] = args.Value
 	entry, ok := node.data[args.Key]
 	if !ok || args.Version > entry.Version {
 		node.data[args.Key] = dataEntry{args.Value, args.Version}
@@ -513,34 +497,19 @@ func (node *KademliaNode) DeleteKey(args *DeleteKeyArgs, reply *DeleteKeyReply) 
 func (node *KademliaNode) Run(wg *sync.WaitGroup) {
 	node.online.Store(true)
 	go node.RunRPCServer(wg)
-	// go func() {
-	// 	for node.online.Load() {
-	// 		time.Sleep(time.Second)
-	// 		randID := hash(fmt.Sprintf("%d", rand.Int()))
-	// 		node.findNode(randID)
-	// 	}
-	// }()
-	// go func() {
-	// 	for node.online.Load() {
-	// 		time.Sleep(5000 * time.Millisecond)
-	// 		node.dataLock.Lock()
-	// 		pairs := make([]Pair, 0, len(node.data))
-	// 		for k, v := range node.data {
-	// 			pairs = append(pairs, Pair{k, v})
-	// 		}
-	// 		node.dataLock.Unlock()
-	// 		for _, pair := range pairs {
-	// 			node.Put(pair.Key, pair.Value)
-	// 		}
-	// 	}
-	// }()
+	go func() {
+		for node.online.Load() {
+			time.Sleep(5 * time.Second)
+			randID := hash(fmt.Sprintf("%d", rand.Int()))
+			node.findNode(randID)
+		}
+	}()
 }
 
 func (node *KademliaNode) Create() {}
 
 func (node *KademliaNode) Join(addr string) bool {
-	// logrus.Infof("Join %s", addr)
-	err := node.RemoteCall(addr, "KademliaNode.Ping", &PingArgs{SenderAddr: node.Addr}, &struct{}{})
+	err := node.RemoteCall(addr, "KademliaNode.Ping", &PingArgs{node.Addr}, &struct{}{})
 	if err != nil {
 		return false
 	}
@@ -550,7 +519,6 @@ func (node *KademliaNode) Join(addr string) bool {
 }
 
 func (node *KademliaNode) Put(key string, value string) bool {
-	// logrus.Infof("Put %s %s", key, value)
 	ver := time.Now().UnixNano()
 	keyID := hash(key)
 	targets := node.findNode(keyID)
@@ -570,14 +538,10 @@ func (node *KademliaNode) Put(key string, value string) bool {
 		}(tmp.Addr)
 	}
 	wg.Wait()
-	// node.dataLock.Lock()
-	// node.data[key] = dataEntry{value, ver}
-	// node.dataLock.Unlock()
 	return ok.Load()
 }
 
 func (node *KademliaNode) Get(key string) (bool, string) {
-	// logrus.Infof("Get %s", key)
 	return node.findValue(key)
 }
 
@@ -585,21 +549,18 @@ func (node *KademliaNode) Delete(key string) bool {
 	deleteVersion := time.Now().UnixNano()
 	keyID := hash(key)
 	deleted := false
-
 	node.dataLock.Lock()
 	if entry, ok := node.data[key]; ok && deleteVersion >= entry.Version {
 		delete(node.data, key)
 		deleted = true
 	}
 	node.dataLock.Unlock()
-
 	shortlist := node.findClosest(keyID, K)
 	if len(shortlist) == 0 {
 		return deleted
 	}
 	visited := make(map[string]bool)
 	visited[node.Addr] = true
-
 	for {
 		var array []KademliaEntry
 		for _, tmp := range shortlist {
@@ -613,7 +574,6 @@ func (node *KademliaNode) Delete(key string) bool {
 		if len(array) == 0 {
 			break
 		}
-
 		var wg sync.WaitGroup
 		res := make([]DeleteKeyReply, len(array))
 		for i, tmp := range array {
@@ -641,22 +601,24 @@ func (node *KademliaNode) Delete(key string) bool {
 		for i := 0; i < len(res); i++ {
 			if res[i].Deleted {
 				deleted = true
-				for _, tmp := range res[i].Nodes {
-					flag := false
-					for _, entry := range shortlist {
-						if entry.Id.Cmp(tmp.Id) == 0 {
-							flag = true
-							break
-						}
+			}
+		}
+		for i := 0; i < len(res); i++ {
+			for _, tmp := range res[i].Nodes {
+				flag := false
+				for _, entry := range shortlist {
+					if entry.Id.Cmp(tmp.Id) == 0 {
+						flag = true
+						break
 					}
-					if !flag {
-						shortlist = append(shortlist, tmp)
-					}
+				}
+				if !flag {
+					shortlist = append(shortlist, tmp)
 				}
 			}
 		}
 		sort.Slice(shortlist, func(i, j int) bool {
-			return xorDistance(shortlist[i].Id, keyID).Cmp(xorDistance(shortlist[j].Id, keyID)) < 0
+			return new(big.Int).Xor(shortlist[i].Id, keyID).Cmp(new(big.Int).Xor(shortlist[j].Id, keyID)) < 0
 		})
 		done := true
 		for _, tmp := range shortlist {
@@ -673,7 +635,6 @@ func (node *KademliaNode) Delete(key string) bool {
 }
 
 func (node *KademliaNode) Quit() {
-	// logrus.Infof("Quit %s", node.Addr)
 	node.dataLock.Lock()
 	pairs := make([]Pair, 0, len(node.data))
 	versions := make([]int64, 0, len(node.data))
@@ -682,9 +643,6 @@ func (node *KademliaNode) Quit() {
 		versions = append(versions, v.Version)
 	}
 	node.dataLock.Unlock()
-	// for _, pair := range pairs {
-	// 	node.Put(pair.Key, pair.Value)
-	// }
 	for i, pair := range pairs {
 		keyID := hash(pair.Key)
 		targets := node.findClosest(keyID, K)
@@ -704,22 +662,10 @@ func (node *KademliaNode) Quit() {
 		wg.Wait()
 	}
 	node.StopRPCServer()
-	// logrus.Infof("Finish Quit %s", node.Addr)
 }
 
 func (node *KademliaNode) ForceQuit() {
-	// logrus.Infof("ForceQuit %s", node.Addr)
 	node.StopRPCServer()
-}
-
-func (node *KademliaNode) HasLocalKey(key string) (bool, string) {
-	node.dataLock.RLock()
-	defer node.dataLock.RUnlock()
-	entry, ok := node.data[key]
-	if ok {
-		return true, entry.Value
-	}
-	return false, ""
 }
 
 func (node *KademliaNode) DeBug() {
