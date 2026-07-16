@@ -137,19 +137,25 @@ func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
 	tmp := bucket.entries[0]
 	tmpAddr := tmp.Addr
 	node.bucketLock.Unlock()
-	err := node.RemoteCall(tmpAddr, "KademliaNode.Ping", &PingArgs{SenderAddr: node.Addr}, &struct{}{})
+	err := node.RemoteCall(tmpAddr, "KademliaNode.Ping", &PingArgs{node.Addr}, &struct{}{})
 	node.bucketLock.Lock()
 	bucket = node.buckets[idx]
 	if len(bucket.entries) == 0 || bucket.entries[0].Addr != tmpAddr {
 		node.bucketLock.Unlock()
-		// logrus.Infof("fail #4 %s", entry.Addr)
 		return
+	}
+	for _, now := range bucket.entries {
+		if now.Id.Cmp(entry.Id) == 0 {
+			node.bucketLock.Unlock()
+			return
+		}
 	}
 	if err != nil {
 		bucket.entries = append(bucket.entries[1:], entry)
+	} else {
+		bucket.entries = append(bucket.entries, entry)
 	}
 	node.bucketLock.Unlock()
-	// logrus.Infof("fail #5 %s", entry.Addr)
 }
 
 func (node *KademliaNode) removeFromBucket(addr string) {
@@ -258,7 +264,7 @@ func (node *KademliaNode) findNode(targetID *big.Int) []KademliaEntry {
 			go func(idx int, addr string) {
 				defer wg.Done()
 				var reply []KademliaEntry
-				err := node.RemoteCall(addr, "KademliaNode.FindNode", &FindNodeArgs{TargetID: targetID, SenderAddr: node.Addr}, &reply)
+				err := node.RemoteCall(addr, "KademliaNode.FindNode", &FindNodeArgs{targetID, node.Addr}, &reply)
 				if err != nil {
 					node.removeFromBucket(addr)
 					return
@@ -283,7 +289,7 @@ func (node *KademliaNode) findNode(targetID *big.Int) []KademliaEntry {
 						break
 					}
 				}
-				if !flag && node.id.Cmp(tmp.Id) != 0 {
+				if !flag {
 					shortlist = append(shortlist, tmp)
 				}
 			}
@@ -350,7 +356,7 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 			go func(idx int, addr string) {
 				defer wg.Done()
 				var reply FindValueReply
-				err := node.RemoteCall(addr, "KademliaNode.FindValue", &FindValueArgs{Key: key, SenderAddr: node.Addr}, &reply)
+				err := node.RemoteCall(addr, "KademliaNode.FindValue", &FindValueArgs{key, node.Addr}, &reply)
 				if err != nil {
 					node.removeFromBucket(addr)
 					return
@@ -373,7 +379,7 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 			if res[i].flag {
 				foundValue := res[i].value
 				// Store the value back to the K nearest nodes
-				cacheTargets := node.findClosest(keyID, K)
+				cacheTargets := node.findNode(keyID)
 				for _, entry := range cacheTargets {
 					err := node.RemoteCall(entry.Addr, "KademliaNode.Store",
 						&StoreArgs{key, foundValue, res[i].ver, node.Addr}, &struct{}{})
@@ -393,7 +399,7 @@ func (node *KademliaNode) findValue(key string) (bool, string) {
 						break
 					}
 				}
-				if !flag && node.id.Cmp(tmp.Id) != 0 {
+				if !flag {
 					shortlist = append(shortlist, tmp)
 				}
 			}
@@ -472,7 +478,7 @@ func (node *KademliaNode) Store(args *StoreArgs, _ *struct{}) error {
 	// node.data[args.Key] = args.Value
 	entry, ok := node.data[args.Key]
 	if !ok || args.Version > entry.Version {
-		node.data[args.Key] = dataEntry{Value: args.Value, Version: args.Version}
+		node.data[args.Key] = dataEntry{args.Value, args.Version}
 	}
 	node.dataLock.Unlock()
 	return nil
@@ -635,37 +641,31 @@ func (node *KademliaNode) Delete(key string) bool {
 		for i := 0; i < len(res); i++ {
 			if res[i].Deleted {
 				deleted = true
-			}
-		}
-
-		for i := 0; i < len(res); i++ {
-			for _, tmp := range res[i].Nodes {
-				flag := false
-				for _, entry := range shortlist {
-					if entry.Id.Cmp(tmp.Id) == 0 {
-						flag = true
-						break
+				for _, tmp := range res[i].Nodes {
+					flag := false
+					for _, entry := range shortlist {
+						if entry.Id.Cmp(tmp.Id) == 0 {
+							flag = true
+							break
+						}
 					}
-				}
-				if !flag && node.id.Cmp(tmp.Id) != 0 {
-					shortlist = append(shortlist, tmp)
+					if !flag {
+						shortlist = append(shortlist, tmp)
+					}
 				}
 			}
 		}
 		sort.Slice(shortlist, func(i, j int) bool {
 			return xorDistance(shortlist[i].Id, keyID).Cmp(xorDistance(shortlist[j].Id, keyID)) < 0
 		})
-		if len(shortlist) > K {
-			shortlist = shortlist[:K]
-		}
-		flag := true
-		for i := 0; i < len(shortlist) && i < K; i++ {
-			if !visited[shortlist[i].Addr] {
-				flag = false
+		done := true
+		for _, tmp := range shortlist {
+			if !visited[tmp.Addr] {
+				done = false
 				break
 			}
 		}
-		if flag {
+		if done {
 			break
 		}
 	}
@@ -695,8 +695,7 @@ func (node *KademliaNode) Quit() {
 			wg.Add(1)
 			go func(addr string) {
 				defer wg.Done()
-				err := node.RemoteCall(addr, "KademliaNode.Store",
-					&StoreArgs{key, value, ver, node.Addr}, &struct{}{})
+				err := node.RemoteCall(addr, "KademliaNode.Store", &StoreArgs{key, value, ver, node.Addr}, &struct{}{})
 				if err != nil {
 					node.removeFromBucket(addr)
 				}
@@ -711,6 +710,16 @@ func (node *KademliaNode) Quit() {
 func (node *KademliaNode) ForceQuit() {
 	// logrus.Infof("ForceQuit %s", node.Addr)
 	node.StopRPCServer()
+}
+
+func (node *KademliaNode) HasLocalKey(key string) (bool, string) {
+	node.dataLock.RLock()
+	defer node.dataLock.RUnlock()
+	entry, ok := node.data[key]
+	if ok {
+		return true, entry.Value
+	}
+	return false, ""
 }
 
 func (node *KademliaNode) DeBug() {
