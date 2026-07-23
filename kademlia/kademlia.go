@@ -144,9 +144,6 @@ func (node *KademliaNode) addToBucket(entry *KademliaEntry) {
 	if err != nil {
 		bucket.entries = append(bucket.entries[1:], entry)
 	}
-	// else {
-	//	 bucket.entries = append(bucket.entries, entry)
-	// }
 	node.bucketLock.Unlock()
 }
 
@@ -666,15 +663,4 @@ func (node *KademliaNode) Quit() {
 
 func (node *KademliaNode) ForceQuit() {
 	node.StopRPCServer()
-}
-
-func (node *KademliaNode) DeBug() {
-	logrus.Infof("DeBug %s %s", node.Addr, node.id)
-	for i := 0; i < M; i++ {
-		if len(node.buckets[i].entries) > 0 {
-			for _, tmp := range node.buckets[i].entries {
-				logrus.Infof("Find %v %s", i, tmp.Id)
-			}
-		}
-	}
 }

@@ -11,7 +11,6 @@ func NewNode(port int) DhtNode {
 */
 
 // Chord test
-
 /*
 import "dht/chord"
 func NewNode(port int) DhtNode {
@@ -20,7 +19,6 @@ func NewNode(port int) DhtNode {
 	return node
 }
 */
-
 // Kademlia test
 
 import "dht/kademlia"
@@ -29,4 +27,5 @@ func NewNode(port int) DhtNode {
 	node.Init(portToAddr(localAddress, port))
 	return node
 }
+
 

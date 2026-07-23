@@ -34,13 +34,12 @@ type ChordNode struct {
 	successorList []*ChordEntry
 	finger        []*ChordEntry
 	start         []*big.Int
+	ringLock      sync.RWMutex
 
 	listener net.Listener
 	server   *rpc.Server
 	data     map[string]string
 	dataLock sync.RWMutex
-
-	ringLock sync.RWMutex
 }
 
 type Pair struct {
@@ -90,8 +89,6 @@ func computeStart(nodeID *big.Int, i uint) *big.Int {
 	result := new(big.Int).Mod(sum, pow2M)
 	return result
 }
-
-// Initialize a node.
 
 func (node *ChordNode) Init(addr string) {
 	node.Addr = addr
@@ -230,18 +227,6 @@ func (node *ChordNode) findFirstLiveSuccessor() *ChordEntry {
 			}
 		}
 	}
-	node.ringLock.RLock()
-	fingers := make([]*ChordEntry, len(node.finger))
-	copy(fingers, node.finger)
-	node.ringLock.RUnlock()
-	for _, f := range fingers {
-		if f != nil && node.id.Cmp(f.Id) != 0 {
-			err := node.RemoteCall(f.Addr, "ChordNode.Ping", "", &struct{}{})
-			if err == nil {
-				return f
-			}
-		}
-	}
 	return nil
 }
 
@@ -277,7 +262,6 @@ func (node *ChordNode) pushCopies() {
 		}
 	}
 	node.dataLock.RUnlock()
-
 	now := new(big.Int).Set(node.id)
 	for i := 0; i < SUC_LIST_LEN; i++ {
 		target := node.findSuccessor(now)
@@ -339,7 +323,6 @@ func (node *ChordNode) FindPredecessor(_ *struct{}, reply *ChordEntry) error {
 		return nil
 	}
 	*reply = *node.predecessor
-
 	return nil
 }
 
@@ -371,7 +354,6 @@ func (node *ChordNode) GetData(key string, reply *string) error {
 		return fmt.Errorf("key %s not found", key)
 	}
 	*reply = value
-
 	return nil
 }
 
@@ -385,12 +367,10 @@ func (node *ChordNode) DeleteData(key string, reply *bool) error {
 	}
 	delete(node.data, key)
 	*reply = true
-
 	return nil
 }
 
 func (node *ChordNode) FindSuccessors(_ *struct{}, reply *[]ChordEntry) error {
-	logrus.Infof("enter FindSuccessors")
 	node.ringLock.RLock()
 	defer node.ringLock.RUnlock()
 	res := make([]ChordEntry, 0, SUC_LIST_LEN)
@@ -400,7 +380,6 @@ func (node *ChordNode) FindSuccessors(_ *struct{}, reply *[]ChordEntry) error {
 		}
 	}
 	*reply = res
-	logrus.Infof("leave FindSuccessors")
 	return nil
 }
 
@@ -521,7 +500,7 @@ func (node *ChordNode) Delete(key string) bool {
 	keyID := hash(key)
 	var ok bool
 	now := new(big.Int).Set(keyID)
-	for true {
+	for {
 		target := node.findSuccessor(now)
 		var flag bool
 		err := node.RemoteCall(target.Addr, "ChordNode.DeleteData", key, &flag)
@@ -557,31 +536,15 @@ func (node *ChordNode) Quit() {
 		}
 		node.dataLock.Unlock()
 	}
-	logrus.Infof("Quit id = %s", node.id)
-	if suc != nil {
-		logrus.Infof("Quit suc = %s", suc.Id)
-	}
-	if pre != nil {
-		logrus.Infof("Quit pre = %s", pre.Id)
-	}
 	if suc != nil && node.id.Cmp(suc.Id) != 0 && pre != nil {
 		node.RemoteCall(suc.Addr, "ChordNode.SetPredecessor", pre, &struct{}{})
 	}
 	if pre != nil && suc != nil {
 		node.RemoteCall(pre.Addr, "ChordNode.SetSuccessor", suc, &struct{}{})
 	}
-	logrus.Infof("Finish Quit %s", node.Addr)
 }
 
 func (node *ChordNode) ForceQuit() {
 	logrus.Infof("ForceQuit %s", node.Addr)
 	node.StopRPCServer()
-}
-
-func (node *ChordNode) DeBug() {
-	node.ringLock.Lock()
-	logrus.Infof("DeBug %s %s", node.Addr, node.id)
-	logrus.Infof("suc is %s", node.successor.Id)
-	logrus.Infof("pre is %s", node.predecessor.Id)
-	node.ringLock.Unlock()
 }
